@@ -10,7 +10,9 @@ import {
   Platform,
   ActivityIndicator,
   ScrollView,
+  Image,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../context/AuthContext';
 
 const RegisterScreen = ({ navigation }) => {
@@ -18,8 +20,34 @@ const RegisterScreen = ({ navigation }) => {
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [avatar, setAvatar] = useState(null);
   const [loading, setLoading] = useState(false);
   const { register } = useAuth();
+
+  // Pick image from gallery
+  const pickImage = async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission required', 'Please allow access to your gallery.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.7,
+      });
+
+      if (!result.canceled) {
+        setAvatar(result.assets[0]);
+      }
+    } catch (err) {
+      console.error(err);
+      Alert.alert('Error', 'Failed to open image picker.');
+    }
+  };
 
   const handleRegister = async () => {
     if (!fullName || !email || !username || !password) {
@@ -29,29 +57,34 @@ const RegisterScreen = ({ navigation }) => {
 
     setLoading(true);
 
-    // Create form data
     const formData = new FormData();
     formData.append('fullName', fullName.trim());
     formData.append('email', email.trim().toLowerCase());
     formData.append('username', username.trim().toLowerCase());
     formData.append('password', password);
-    
-    // Use default avatar (you can add image picker later)
-    formData.append('avatar', {
-      uri: 'https://ui-avatars.com/api/?name=' + fullName.replace(' ', '+'),
-      type: 'image/jpeg',
-      name: 'avatar.jpg',
-    });
+
+    if (avatar) {
+      formData.append('avatar', {
+        uri: avatar.uri,
+        type: 'image/jpeg',
+        name: 'avatar.jpg',
+      });
+    } else {
+      // fallback to generated avatar
+      formData.append('avatar', {
+        uri: `https://ui-avatars.com/api/?name=${encodeURIComponent(fullName)}`,
+        type: 'image/jpeg',
+        name: 'avatar.jpg',
+      });
+    }
 
     const result = await register(formData);
     setLoading(false);
 
     if (result.success) {
-      Alert.alert(
-        'Success',
-        'Registration successful! Please login.',
-        [{ text: 'OK', onPress: () => navigation.navigate('Login') }]
-      );
+      Alert.alert('Success', 'Registration successful! Please login.', [
+        { text: 'OK', onPress: () => navigation.navigate('Login') },
+      ]);
     } else {
       Alert.alert('Registration Failed', result.message);
     }
@@ -66,6 +99,16 @@ const RegisterScreen = ({ navigation }) => {
         <View style={styles.content}>
           <Text style={styles.title}>Create Account</Text>
           <Text style={styles.subtitle}>Sign up to get started</Text>
+
+          <TouchableOpacity style={styles.imagePicker} onPress={pickImage}>
+            {avatar ? (
+              <Image source={{ uri: avatar.uri }} style={styles.avatar} />
+            ) : (
+              <View style={styles.placeholder}>
+                <Text style={styles.placeholderText}>Pick Profile Image</Text>
+              </View>
+            )}
+          </TouchableOpacity>
 
           <View style={styles.form}>
             <TextInput
@@ -155,7 +198,28 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 16,
     color: '#666',
-    marginBottom: 40,
+    marginBottom: 30,
+  },
+  imagePicker: {
+    alignSelf: 'center',
+    marginBottom: 30,
+  },
+  avatar: {
+    width: 110,
+    height: 110,
+    borderRadius: 55,
+  },
+  placeholder: {
+    width: 110,
+    height: 110,
+    borderRadius: 55,
+    backgroundColor: '#ddd',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  placeholderText: {
+    color: '#555',
+    fontSize: 12,
   },
   form: {
     width: '100%',

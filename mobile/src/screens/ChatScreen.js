@@ -10,12 +10,13 @@ import {
   Platform,
   ActivityIndicator,
   Image,
+  Keyboard,
 } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { messageAPI } from '../services/api';
 import socketService from '../services/socket';
 
-const ChatScreen = ({ route }) => {
+const ChatScreen = ({ route, navigation }) => {
   const { userId, userName, userAvatar } = route.params;
   const { user } = useAuth();
   const [messages, setMessages] = useState([]);
@@ -23,32 +24,93 @@ const ChatScreen = ({ route }) => {
   const [loading, setLoading] = useState(true);
   const [isTyping, setIsTyping] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isOnline, setIsOnline] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const flatListRef = useRef(null);
   const typingTimeoutRef = useRef(null);
 
   useEffect(() => {
     fetchMessages();
     setupSocketListeners();
+    setupKeyboardListeners();
+
+    // Update header with online status
+    updateHeaderTitle();
 
     return () => {
       // Clear typing timeout
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
       }
-      // Remove socket listeners
-      socketService.removeAllListeners();
+      // Stop typing when leaving chat
+      if (socketService.stopTyping) {
+        socketService.stopTyping(userId);
+      }
+      // Remove socket listeners (but keep them for other screens)
+      cleanupSocketListeners();
     };
   }, []);
+
+  useEffect(() => {
+    updateHeaderTitle();
+  }, [isOnline, isTyping]);
+
+  const setupKeyboardListeners = () => {
+    const keyboardWillShow = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e) => {
+        setKeyboardHeight(e.endCoordinates.height);
+        scrollToBottom();
+      }
+    );
+
+    const keyboardWillHide = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setKeyboardHeight(0);
+      }
+    );
+
+    return () => {
+      keyboardWillShow.remove();
+      keyboardWillHide.remove();
+    };
+  };
+
+  const updateHeaderTitle = () => {
+    navigation.setOptions({
+      headerTitle: () => (
+        <View style={styles.headerContainer}>
+          <View style={styles.headerAvatarContainer}>
+            <Image
+              source={{ uri: userAvatar }}
+              style={styles.headerAvatar}
+            />
+            {isOnline && <View style={styles.headerOnlineBadge} />}
+          </View>
+          <View style={styles.headerTextContainer}>
+            <Text style={styles.headerName}>{userName}</Text>
+            <Text style={styles.headerStatus}>
+              {isTyping ? 'typing...' : isOnline ? 'online' : 'offline'}
+            </Text>
+          </View>
+        </View>
+      ),
+    });
+  };
 
   const fetchMessages = async () => {
     try {
       const response = await messageAPI.getMessages(userId);
-      setMessages(response.data.data);
+      const fetchedMessages = response.data.data || [];
+      setMessages(fetchedMessages);
       
-      // Mark messages as read
-      response.data.data.forEach(msg => {
-        if (msg.sender._id === userId && !msg.isRead) {
-          socketService.markAsRead(msg._id, userId);
+      // Mark unread messages as read
+      fetchedMessages.forEach(msg => {
+        if (msg.sender?._id === userId && !msg.isRead) {
+          if (socketService.markAsRead) {
+            socketService.markAsRead(msg._id, userId);
+          }
         }
       });
     } catch (error) {
@@ -60,56 +122,110 @@ const ChatScreen = ({ route }) => {
 
   const setupSocketListeners = () => {
     // Listen for new messages
-    socketService.onNewMessage(({ message }) => {
-      if (message.sender._id === userId) {
-        setMessages(prev => [...prev, message]);
-        // Mark as read immediately
-        socketService.markAsRead(message._id, userId);
-        scrollToBottom();
-      }
-    });
+    if (socketService.onNewMessage) {
+      socketService.onNewMessage(({ message }) => {
+        if (message?.sender?._id === userId) {
+          setMessages(prev => [...prev, message]);
+          // Mark as read immediately since chat is open
+          if (socketService.markAsRead) {
+            socketService.markAsRead(message._id, userId);
+          }
+          scrollToBottom();
+        }
+      });
+    }
 
     // Listen for message sent confirmation
-    socketService.onMessageSent(({ message }) => {
-      setMessages(prev => [...prev, message]);
-      scrollToBottom();
-    });
+    if (socketService.onMessageSent) {
+      socketService.onMessageSent(({ message }) => {
+        if (message) {
+          setMessages(prev => {
+            // Avoid duplicates
+            const exists = prev.find(m => m._id === message._id);
+            if (exists) return prev;
+            return [...prev, message];
+          });
+          scrollToBottom();
+        }
+      });
+    }
 
     // Listen for delivery receipts
-    socketService.onMessageDelivered(({ messageId }) => {
-      setMessages(prev =>
-        prev.map(msg =>
-          msg._id === messageId ? { ...msg, isDelivered: true } : msg
-        )
-      );
-    });
+    if (socketService.onMessageDelivered) {
+      socketService.onMessageDelivered(({ messageId }) => {
+        setMessages(prev =>
+          prev.map(msg =>
+            msg._id === messageId ? { ...msg, isDelivered: true } : msg
+          )
+        );
+      });
+    }
 
     // Listen for read receipts
-    socketService.onMessageRead(({ messageId }) => {
-      setMessages(prev =>
-        prev.map(msg =>
-          msg._id === messageId ? { ...msg, isRead: true } : msg
-        )
-      );
-    });
+    if (socketService.onMessageRead) {
+      socketService.onMessageRead(({ messageId }) => {
+        setMessages(prev =>
+          prev.map(msg =>
+            msg._id === messageId ? { ...msg, isRead: true, readAt: new Date() } : msg
+          )
+        );
+      });
+    }
 
     // Listen for typing indicators
-    socketService.onTypingStart(({ userId: typingUserId }) => {
-      if (typingUserId === userId) {
-        setIsTyping(true);
-      }
-    });
+    if (socketService.onTypingStart) {
+      socketService.onTypingStart(({ userId: typingUserId }) => {
+        if (typingUserId === userId) {
+          setIsTyping(true);
+        }
+      });
+    }
 
-    socketService.onTypingStop(({ userId: typingUserId }) => {
-      if (typingUserId === userId) {
-        setIsTyping(false);
-      }
-    });
+    if (socketService.onTypingStop) {
+      socketService.onTypingStop(({ userId: typingUserId }) => {
+        if (typingUserId === userId) {
+          setIsTyping(false);
+        }
+      });
+    }
+
+    // Listen for online/offline status
+    if (socketService.onUserOnline) {
+      socketService.onUserOnline(({ userId: onlineUserId }) => {
+        if (onlineUserId === userId) {
+          setIsOnline(true);
+        }
+      });
+    }
+
+    if (socketService.onUserOffline) {
+      socketService.onUserOffline(({ userId: offlineUserId }) => {
+        if (offlineUserId === userId) {
+          setIsOnline(false);
+        }
+      });
+    }
+
+    // Get initial online users list
+    if (socketService.onUsersOnline) {
+      socketService.onUsersOnline(({ userIds }) => {
+        if (userIds && Array.isArray(userIds)) {
+          setIsOnline(userIds.includes(userId));
+        }
+      });
+    }
+  };
+
+  const cleanupSocketListeners = () => {
+    // Don't remove all listeners as it affects other screens
+    // Socket listeners will be managed by the socket service
   };
 
   const scrollToBottom = () => {
     setTimeout(() => {
-      flatListRef.current?.scrollToEnd({ animated: true });
+      if (flatListRef.current && messages.length > 0) {
+        flatListRef.current.scrollToEnd({ animated: true });
+      }
     }, 100);
   };
 
@@ -121,13 +237,23 @@ const ChatScreen = ({ route }) => {
     setIsSending(true);
 
     // Stop typing indicator
-    socketService.stopTyping(userId);
+    if (socketService.stopTyping) {
+      socketService.stopTyping(userId);
+    }
 
-    // Send message via socket
-    socketService.sendMessage(userId, messageText);
-    
-    setIsSending(false);
-    scrollToBottom();
+    try {
+      // Send message via socket
+      if (socketService.sendMessage) {
+        socketService.sendMessage(userId, messageText);
+      } else {
+        console.warn('Socket sendMessage not available');
+      }
+    } catch (error) {
+      console.error('Error sending message:', error);
+    } finally {
+      setIsSending(false);
+      scrollToBottom();
+    }
   };
 
   const handleTextChange = (text) => {
@@ -140,20 +266,43 @@ const ChatScreen = ({ route }) => {
 
     // Send typing start
     if (text.length > 0) {
-      socketService.startTyping(userId);
+      if (socketService.startTyping) {
+        socketService.startTyping(userId);
+      }
 
       // Auto stop typing after 3 seconds of no typing
       typingTimeoutRef.current = setTimeout(() => {
-        socketService.stopTyping(userId);
+        if (socketService.stopTyping) {
+          socketService.stopTyping(userId);
+        }
       }, 3000);
     } else {
-      socketService.stopTyping(userId);
+      if (socketService.stopTyping) {
+        socketService.stopTyping(userId);
+      }
+    }
+  };
+
+  const getTickStyle = (item) => {
+    if (!item) return null;
+    
+    const isSentByMe = item.sender?._id === user?._id;
+    if (!isSentByMe) return null;
+
+    if (item.isRead) {
+      return { text: '✓✓', color: '#4FC3F7' }; // Blue double tick for read
+    } else if (item.isDelivered) {
+      return { text: '✓✓', color: 'rgba(255, 255, 255, 0.7)' }; // Gray double tick for delivered
+    } else {
+      return { text: '✓', color: 'rgba(255, 255, 255, 0.7)' }; // Single tick for sent
     }
   };
 
   const renderMessage = ({ item }) => {
+    if (!item || !item.sender) return null;
+
     const isSentByMe = item.sender._id === user._id;
-    const showTicks = isSentByMe;
+    const tickStyle = getTickStyle(item);
 
     return (
       <View
@@ -197,9 +346,9 @@ const ChatScreen = ({ route }) => {
               })}
             </Text>
             
-            {showTicks && (
-              <Text style={styles.messageTicks}>
-                {item.isRead ? '✓✓' : item.isDelivered ? '✓✓' : '✓'}
+            {tickStyle && (
+              <Text style={[styles.messageTicks, { color: tickStyle.color }]}>
+                {tickStyle.text}
               </Text>
             )}
           </View>
@@ -218,17 +367,18 @@ const ChatScreen = ({ route }) => {
 
   return (
     <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       style={styles.container}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       <FlatList
         ref={flatListRef}
         data={messages}
-        keyExtractor={(item) => item._id}
+        keyExtractor={(item, index) => item._id || `msg-${index}`}
         renderItem={renderMessage}
         contentContainerStyle={styles.messagesList}
         onContentSizeChange={scrollToBottom}
+        onLayout={scrollToBottom}
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyText}>No messages yet</Text>
@@ -236,12 +386,6 @@ const ChatScreen = ({ route }) => {
           </View>
         }
       />
-
-      {isTyping && (
-        <View style={styles.typingContainer}>
-          <Text style={styles.typingText}>{userName} is typing...</Text>
-        </View>
-      )}
 
       <View style={styles.inputContainer}>
         <TextInput
@@ -251,6 +395,8 @@ const ChatScreen = ({ route }) => {
           onChangeText={handleTextChange}
           multiline
           maxLength={1000}
+          returnKeyType="default"
+          blurOnSubmit={false}
         />
         
         <TouchableOpacity
@@ -281,6 +427,44 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  headerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerAvatarContainer: {
+    position: 'relative',
+    marginRight: 10,
+  },
+  headerAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#ddd',
+  },
+  headerOnlineBadge: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#4CAF50',
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  headerTextContainer: {
+    justifyContent: 'center',
+  },
+  headerName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  headerStatus: {
+    fontSize: 12,
+    color: 'rgba(255, 255, 255, 0.8)',
+    fontStyle: 'italic',
   },
   messagesList: {
     padding: 16,
@@ -319,6 +503,7 @@ const styles = StyleSheet.create({
     height: 32,
     borderRadius: 16,
     marginRight: 8,
+    backgroundColor: '#ddd',
   },
   messageBubble: {
     maxWidth: '75%',
@@ -361,17 +546,7 @@ const styles = StyleSheet.create({
   },
   messageTicks: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.9)',
-  },
-  typingContainer: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: '#f9f9f9',
-  },
-  typingText: {
-    fontSize: 14,
-    color: '#666',
-    fontStyle: 'italic',
+    fontWeight: 'bold',
   },
   inputContainer: {
     flexDirection: 'row',

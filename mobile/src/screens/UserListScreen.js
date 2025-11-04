@@ -14,14 +14,14 @@ import { messageAPI } from '../services/api';
 import socketService from '../services/socket';
 
 const UserListScreen = ({ navigation }) => {
-  const [users, setUsers] = useState([]);
+  const [conversations, setConversations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState(new Set());
   const { logout, user } = useAuth();
 
   useEffect(() => {
-    fetchUsers();
+    fetchConversations();
     setupSocketListeners();
 
     return () => {
@@ -30,12 +30,10 @@ const UserListScreen = ({ navigation }) => {
   }, []);
 
   const setupSocketListeners = () => {
-    // Listen for users coming online
     socketService.onUserOnline(({ userId }) => {
       setOnlineUsers(prev => new Set([...prev, userId]));
     });
 
-    // Listen for users going offline
     socketService.onUserOffline(({ userId }) => {
       setOnlineUsers(prev => {
         const newSet = new Set(prev);
@@ -44,25 +42,18 @@ const UserListScreen = ({ navigation }) => {
       });
     });
 
-    // Get initial online users
     socketService.onUsersOnline(({ userIds }) => {
       setOnlineUsers(new Set(userIds));
     });
   };
 
-  const fetchUsers = async () => {
+  const fetchConversations = async () => {
     try {
-      const response = await messageAPI.getUsers();
-      const fetchedUsers = response.data.data;
-      setUsers(fetchedUsers);
-      
-      // Set initial online status
-      const online = new Set(
-        fetchedUsers.filter(u => u.isOnline).map(u => u._id)
-      );
-      setOnlineUsers(online);
+      const response = await messageAPI.getConversations();
+      const fetched = response.data.data;
+      setConversations(fetched);
     } catch (error) {
-      console.error('Error fetching users:', error);
+      console.error('Error fetching conversations:', error);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -71,23 +62,23 @@ const UserListScreen = ({ navigation }) => {
 
   const onRefresh = () => {
     setRefreshing(true);
-    fetchUsers();
+    fetchConversations();
   };
 
   const handleUserPress = (selectedUser) => {
     navigation.navigate('Chat', {
-      userId: selectedUser._id,
+      userId: selectedUser.userId,
       userName: selectedUser.fullName,
       userAvatar: selectedUser.avatar,
     });
   };
 
-  const handleLogout = () => {
-    logout();
-  };
-
-  const renderUser = ({ item }) => {
-    const isOnline = onlineUsers.has(item._id);
+  const renderConversation = ({ item }) => {
+    const isOnline = onlineUsers.has(item.userId);
+    const lastMessage = item.lastMessage?.content || 'Start chatting...';
+    const time = item.lastMessage?.createdAt
+      ? new Date(item.lastMessage.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : '';
 
     return (
       <TouchableOpacity
@@ -95,22 +86,19 @@ const UserListScreen = ({ navigation }) => {
         onPress={() => handleUserPress(item)}
       >
         <View style={styles.avatarContainer}>
-          <Image
-            source={{ uri: item.avatar }}
-            style={styles.avatar}
-          />
+          <Image source={{ uri: item.avatar }} style={styles.avatar} />
           {isOnline && <View style={styles.onlineBadge} />}
         </View>
 
         <View style={styles.userInfo}>
           <Text style={styles.userName}>{item.fullName}</Text>
-          <Text style={styles.userStatus}>
-            {isOnline ? 'Online' : 'Offline'}
+          <Text style={styles.lastMessage} numberOfLines={1}>
+            {lastMessage}
           </Text>
         </View>
 
-        <View style={styles.arrow}>
-          <Text style={styles.arrowText}>›</Text>
+        <View style={styles.timeContainer}>
+          <Text style={styles.timeText}>{time}</Text>
         </View>
       </TouchableOpacity>
     );
@@ -126,24 +114,35 @@ const UserListScreen = ({ navigation }) => {
 
   return (
     <View style={styles.container}>
+      {/* ====== Header ====== */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Messages</Text>
-        <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
+        <View style={styles.userHeaderLeft}>
+          <Image
+            source={{ uri: user?.avatar }}
+            style={styles.userHeaderAvatar}
+          />
+          <Text style={styles.userHeaderName}>
+            {user?.fullName || 'User'}
+          </Text>
+        </View>
+
+        <TouchableOpacity onPress={logout} style={styles.logoutButton}>
           <Text style={styles.logoutText}>Logout</Text>
         </TouchableOpacity>
       </View>
 
+      {/* ====== Conversation List ====== */}
       <FlatList
-        data={users}
-        keyExtractor={(item) => item._id}
-        renderItem={renderUser}
+        data={conversations}
+        keyExtractor={(item) => item.userId}
+        renderItem={renderConversation}
         contentContainerStyle={styles.list}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No users found</Text>
+            <Text style={styles.emptyText}>No conversations yet</Text>
           </View>
         }
       />
@@ -154,7 +153,7 @@ const UserListScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#f9f9f9',
   },
   header: {
     flexDirection: 'row',
@@ -164,25 +163,34 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#eee',
+    elevation: 2,
   },
-  headerTitle: {
-    fontSize: 24,
+  userHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  userHeaderAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    marginRight: 10,
+    backgroundColor: '#ddd',
+  },
+  userHeaderName: {
+    fontSize: 18,
     fontWeight: 'bold',
     color: '#333',
   },
   logoutButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#f2f2f2',
+    borderRadius: 8,
   },
   logoutText: {
     color: '#0066cc',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   list: {
     paddingVertical: 8,
@@ -192,8 +200,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#fff',
     padding: 16,
-    marginHorizontal: 8,
-    marginVertical: 4,
+    marginHorizontal: 10,
+    marginVertical: 5,
     borderRadius: 12,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
@@ -205,15 +213,15 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   avatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
+    width: 55,
+    height: 55,
+    borderRadius: 27,
     backgroundColor: '#ddd',
   },
   onlineBadge: {
     position: 'absolute',
-    bottom: 2,
-    right: 2,
+    bottom: 3,
+    right: 3,
     width: 14,
     height: 14,
     borderRadius: 7,
@@ -229,18 +237,23 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#333',
-    marginBottom: 4,
   },
-  userStatus: {
+  lastMessage: {
     fontSize: 14,
     color: '#666',
+    marginTop: 2,
   },
-  arrow: {
-    paddingLeft: 8,
+  timeContainer: {
+    marginLeft: 8,
   },
-  arrowText: {
-    fontSize: 24,
-    color: '#ccc',
+  timeText: {
+    fontSize: 12,
+    color: '#999',
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   emptyContainer: {
     alignItems: 'center',

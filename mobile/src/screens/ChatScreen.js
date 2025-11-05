@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -25,17 +25,15 @@ const ChatScreen = ({ route, navigation }) => {
   const [isTyping, setIsTyping] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isOnline, setIsOnline] = useState(false);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const flatListRef = useRef(null);
   const typingTimeoutRef = useRef(null);
+  const isScreenFocused = useRef(true);
 
+  // Fetch initial data
   useEffect(() => {
     fetchMessages();
+    checkInitialOnlineStatus();
     setupSocketListeners();
-    setupKeyboardListeners();
-
-    // Update header with online status
-    updateHeaderTitle();
 
     return () => {
       // Clear typing timeout
@@ -46,38 +44,30 @@ const ChatScreen = ({ route, navigation }) => {
       if (socketService.stopTyping) {
         socketService.stopTyping(userId);
       }
-      // Remove socket listeners (but keep them for other screens)
-      cleanupSocketListeners();
+      isScreenFocused.current = false;
     };
   }, []);
 
+  // Update header when status changes
   useEffect(() => {
     updateHeaderTitle();
-  }, [isOnline, isTyping]);
+  }, [isOnline, isTyping, userName]);
 
-  const setupKeyboardListeners = () => {
-    const keyboardWillShow = Keyboard.addListener(
-      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
-      (e) => {
-        setKeyboardHeight(e.endCoordinates.height);
-        scrollToBottom();
+  // Check initial online status
+  const checkInitialOnlineStatus = async () => {
+    try {
+      const response = await messageAPI.getUsers();
+      const users = response.data.data || [];
+      const targetUser = users.find(u => u._id === userId);
+      if (targetUser) {
+        setIsOnline(targetUser.isOnline);
       }
-    );
-
-    const keyboardWillHide = Keyboard.addListener(
-      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
-      () => {
-        setKeyboardHeight(0);
-      }
-    );
-
-    return () => {
-      keyboardWillShow.remove();
-      keyboardWillHide.remove();
-    };
+    } catch (error) {
+      console.error('Error checking online status:', error);
+    }
   };
 
-  const updateHeaderTitle = () => {
+  const updateHeaderTitle = useCallback(() => {
     navigation.setOptions({
       headerTitle: () => (
         <View style={styles.headerContainer}>
@@ -97,7 +87,7 @@ const ChatScreen = ({ route, navigation }) => {
         </View>
       ),
     });
-  };
+  }, [isOnline, isTyping, userName, userAvatar, navigation]);
 
   const fetchMessages = async () => {
     try {
@@ -113,6 +103,9 @@ const ChatScreen = ({ route, navigation }) => {
           }
         }
       });
+
+      // Scroll to bottom after messages load
+      setTimeout(() => scrollToBottom(), 300);
     } catch (error) {
       console.error('Error fetching messages:', error);
     } finally {
@@ -124,8 +117,14 @@ const ChatScreen = ({ route, navigation }) => {
     // Listen for new messages
     if (socketService.onNewMessage) {
       socketService.onNewMessage(({ message }) => {
-        if (message?.sender?._id === userId) {
-          setMessages(prev => [...prev, message]);
+        if (message?.sender?._id === userId && isScreenFocused.current) {
+          setMessages(prev => {
+            // Avoid duplicates
+            const exists = prev.find(m => m._id === message._id);
+            if (exists) return prev;
+            return [...prev, message];
+          });
+          
           // Mark as read immediately since chat is open
           if (socketService.markAsRead) {
             socketService.markAsRead(message._id, userId);
@@ -138,7 +137,7 @@ const ChatScreen = ({ route, navigation }) => {
     // Listen for message sent confirmation
     if (socketService.onMessageSent) {
       socketService.onMessageSent(({ message }) => {
-        if (message) {
+        if (message && isScreenFocused.current) {
           setMessages(prev => {
             // Avoid duplicates
             const exists = prev.find(m => m._id === message._id);
@@ -189,9 +188,10 @@ const ChatScreen = ({ route, navigation }) => {
       });
     }
 
-    // Listen for online/offline status
+    // FIXED: Listen for online status changes
     if (socketService.onUserOnline) {
       socketService.onUserOnline(({ userId: onlineUserId }) => {
+        console.log('User came online:', onlineUserId, 'Current user:', userId);
         if (onlineUserId === userId) {
           setIsOnline(true);
         }
@@ -200,6 +200,7 @@ const ChatScreen = ({ route, navigation }) => {
 
     if (socketService.onUserOffline) {
       socketService.onUserOffline(({ userId: offlineUserId }) => {
+        console.log('User went offline:', offlineUserId, 'Current user:', userId);
         if (offlineUserId === userId) {
           setIsOnline(false);
         }
@@ -209,25 +210,23 @@ const ChatScreen = ({ route, navigation }) => {
     // Get initial online users list
     if (socketService.onUsersOnline) {
       socketService.onUsersOnline(({ userIds }) => {
+        console.log('Online users list:', userIds);
         if (userIds && Array.isArray(userIds)) {
-          setIsOnline(userIds.includes(userId));
+          const isUserOnline = userIds.includes(userId);
+          console.log('Is target user online?', isUserOnline);
+          setIsOnline(isUserOnline);
         }
       });
     }
   };
 
-  const cleanupSocketListeners = () => {
-    // Don't remove all listeners as it affects other screens
-    // Socket listeners will be managed by the socket service
-  };
-
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     setTimeout(() => {
       if (flatListRef.current && messages.length > 0) {
         flatListRef.current.scrollToEnd({ animated: true });
       }
     }, 100);
-  };
+  }, [messages.length]);
 
   const handleSend = async () => {
     if (!inputText.trim() || isSending) return;
@@ -235,6 +234,9 @@ const ChatScreen = ({ route, navigation }) => {
     const messageText = inputText.trim();
     setInputText('');
     setIsSending(true);
+
+    // Dismiss keyboard
+    Keyboard.dismiss();
 
     // Stop typing indicator
     if (socketService.stopTyping) {
@@ -367,7 +369,7 @@ const ChatScreen = ({ route, navigation }) => {
 
   return (
     <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       style={styles.container}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
@@ -378,7 +380,6 @@ const ChatScreen = ({ route, navigation }) => {
         renderItem={renderMessage}
         contentContainerStyle={styles.messagesList}
         onContentSizeChange={scrollToBottom}
-        onLayout={scrollToBottom}
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyText}>No messages yet</Text>
@@ -391,6 +392,7 @@ const ChatScreen = ({ route, navigation }) => {
         <TextInput
           style={styles.input}
           placeholder="Type a message..."
+          placeholderTextColor="#999"
           value={inputText}
           onChangeText={handleTextChange}
           multiline
@@ -406,6 +408,7 @@ const ChatScreen = ({ route, navigation }) => {
           ]}
           onPress={handleSend}
           disabled={!inputText.trim() || isSending}
+          activeOpacity={0.7}
         >
           {isSending ? (
             <ActivityIndicator size="small" color="#fff" />
@@ -427,6 +430,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#f5f5f5',
   },
   headerContainer: {
     flexDirection: 'row',
@@ -451,7 +455,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     backgroundColor: '#4CAF50',
     borderWidth: 2,
-    borderColor: '#fff',
+    borderColor: '#0066cc',
   },
   headerTextContainer: {
     justifyContent: 'center',
@@ -463,7 +467,7 @@ const styles = StyleSheet.create({
   },
   headerStatus: {
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.8)',
+    color: 'rgba(255, 255, 255, 0.85)',
     fontStyle: 'italic',
   },
   messagesList: {
@@ -518,6 +522,11 @@ const styles = StyleSheet.create({
   receivedBubble: {
     backgroundColor: '#fff',
     borderBottomLeftRadius: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 1,
   },
   messageText: {
     fontSize: 16,
@@ -565,6 +574,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     maxHeight: 100,
     marginRight: 8,
+    color: '#333',
   },
   sendButton: {
     backgroundColor: '#0066cc',
@@ -582,7 +592,7 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
-  },
+  }, 
 });
 
 export default ChatScreen;

@@ -14,46 +14,109 @@ import { messageAPI } from '../services/api';
 import socketService from '../services/socket';
 
 const UserListScreen = ({ navigation }) => {
-  const [conversations, setConversations] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [conversations, setConversations] = useState({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState(new Set());
   const { logout, user } = useAuth();
 
   useEffect(() => {
-    fetchConversations();
+    fetchData();
     setupSocketListeners();
 
     return () => {
-      socketService.removeAllListeners();
+      // Socket listeners managed by service
     };
   }, []);
 
   const setupSocketListeners = () => {
-    socketService.onUserOnline(({ userId }) => {
-      setOnlineUsers(prev => new Set([...prev, userId]));
-    });
-
-    socketService.onUserOffline(({ userId }) => {
-      setOnlineUsers(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(userId);
-        return newSet;
+    // Listen for users coming online
+    if (socketService.onUserOnline) {
+      socketService.onUserOnline(({ userId }) => {
+        setOnlineUsers(prev => new Set([...prev, userId]));
       });
-    });
+    }
 
-    socketService.onUsersOnline(({ userIds }) => {
-      setOnlineUsers(new Set(userIds));
-    });
+    // Listen for users going offline
+    if (socketService.onUserOffline) {
+      socketService.onUserOffline(({ userId }) => {
+        setOnlineUsers(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(userId);
+          return newSet;
+        });
+      });
+    }
+
+    // Get initial online users
+    if (socketService.onUsersOnline) {
+      socketService.onUsersOnline(({ userIds }) => {
+        if (userIds && Array.isArray(userIds)) {
+          setOnlineUsers(new Set(userIds));
+        }
+      });
+    }
+
+    // Listen for new messages to update last message
+    if (socketService.onNewMessage) {
+      socketService.onNewMessage(({ message }) => {
+        if (message) {
+          setConversations(prev => ({
+            ...prev,
+            [message.sender._id]: {
+              content: message.content,
+              createdAt: message.createdAt,
+              senderId: message.sender._id
+            }
+          }));
+        }
+      });
+    }
+
+    // Listen for sent messages
+    if (socketService.onMessageSent) {
+      socketService.onMessageSent(({ message }) => {
+        if (message) {
+          setConversations(prev => ({
+            ...prev,
+            [message.receiver]: {
+              content: message.content,
+              createdAt: message.createdAt,
+              senderId: message.sender._id
+            }
+          }));
+        }
+      });
+    }
   };
 
-  const fetchConversations = async () => {
+  const fetchData = async () => {
     try {
-      const response = await messageAPI.getConversations();
-      const fetched = response.data.data;
-      setConversations(fetched);
+      // Fetch all users
+      const usersResponse = await messageAPI.getUsers();
+      const fetchedUsers = usersResponse.data.data || [];
+      setUsers(fetchedUsers);
+      
+      // Set initial online status
+      const online = new Set(
+        fetchedUsers.filter(u => u.isOnline).map(u => u._id)
+      );
+      setOnlineUsers(online);
+
+      // Fetch conversations to get last messages
+      const conversationsResponse = await messageAPI.getConversations();
+      const conversationsData = conversationsResponse.data.data || [];
+      
+      // Create a map of userId -> lastMessage
+      const conversationsMap = {};
+      conversationsData.forEach(conv => {
+        conversationsMap[conv.userId] = conv.lastMessage;
+      });
+      setConversations(conversationsMap);
+
     } catch (error) {
-      console.error('Error fetching conversations:', error);
+      console.error('Error fetching data:', error);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -62,23 +125,54 @@ const UserListScreen = ({ navigation }) => {
 
   const onRefresh = () => {
     setRefreshing(true);
-    fetchConversations();
+    fetchData();
   };
 
   const handleUserPress = (selectedUser) => {
     navigation.navigate('Chat', {
-      userId: selectedUser.userId,
+      userId: selectedUser._id,
       userName: selectedUser.fullName,
       userAvatar: selectedUser.avatar,
     });
   };
 
-  const renderConversation = ({ item }) => {
-    const isOnline = onlineUsers.has(item.userId);
-    const lastMessage = item.lastMessage?.content || 'Start chatting...';
-    const time = item.lastMessage?.createdAt
-      ? new Date(item.lastMessage.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      : '';
+  const getLastMessage = (userId) => {
+    const conversation = conversations[userId];
+    if (!conversation || !conversation.content) {
+      return 'Tap to start chatting';
+    }
+    
+    const isMyMessage = conversation.senderId === user._id;
+    const prefix = isMyMessage ? 'You: ' : '';
+    return prefix + conversation.content;
+  };
+
+  const getLastMessageTime = (userId) => {
+    const conversation = conversations[userId];
+    if (!conversation || !conversation.createdAt) return '';
+    
+    const messageDate = new Date(conversation.createdAt);
+    const now = new Date();
+    const diffMs = now - messageDate;
+    const diffMins = Math.floor(diffMs / 60000);
+    
+    if (diffMins < 1) return 'now';
+    if (diffMins < 60) return `${diffMins}m`;
+    
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h`;
+    
+    const diffDays = Math.floor(diffHours / 24);
+    if (diffDays === 1) return 'yesterday';
+    if (diffDays < 7) return `${diffDays}d`;
+    
+    return messageDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  const renderUser = ({ item }) => {
+    const isOnline = onlineUsers.has(item._id);
+    const lastMessage = getLastMessage(item._id);
+    const messageTime = getLastMessageTime(item._id);
 
     return (
       <TouchableOpacity
@@ -91,14 +185,19 @@ const UserListScreen = ({ navigation }) => {
         </View>
 
         <View style={styles.userInfo}>
-          <Text style={styles.userName}>{item.fullName}</Text>
+          <View style={styles.userHeader}>
+            <Text style={styles.userName}>{item.fullName}</Text>
+            {messageTime ? (
+              <Text style={styles.timeText}>{messageTime}</Text>
+            ) : null}
+          </View>
           <Text style={styles.lastMessage} numberOfLines={1}>
             {lastMessage}
           </Text>
         </View>
 
-        <View style={styles.timeContainer}>
-          <Text style={styles.timeText}>{time}</Text>
+        <View style={styles.arrow}>
+          <Text style={styles.arrowText}>›</Text>
         </View>
       </TouchableOpacity>
     );
@@ -121,9 +220,12 @@ const UserListScreen = ({ navigation }) => {
             source={{ uri: user?.avatar }}
             style={styles.userHeaderAvatar}
           />
-          <Text style={styles.userHeaderName}>
-            {user?.fullName || 'User'}
-          </Text>
+          <View>
+            <Text style={styles.userHeaderName}>
+              {user?.fullName || 'User'}
+            </Text>
+            <Text style={styles.userHeaderSubtext}>Messages</Text>
+          </View>
         </View>
 
         <TouchableOpacity onPress={logout} style={styles.logoutButton}>
@@ -131,18 +233,19 @@ const UserListScreen = ({ navigation }) => {
         </TouchableOpacity>
       </View>
 
-      {/* ====== Conversation List ====== */}
+      {/* ====== User List ====== */}
       <FlatList
-        data={conversations}
-        keyExtractor={(item) => item.userId}
-        renderItem={renderConversation}
+        data={users}
+        keyExtractor={(item) => item._id}
+        renderItem={renderUser}
         contentContainerStyle={styles.list}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No conversations yet</Text>
+            <Text style={styles.emptyText}>No users found</Text>
+            <Text style={styles.emptySubtext}>Pull down to refresh</Text>
           </View>
         }
       />
@@ -153,7 +256,7 @@ const UserListScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f9f9f9',
+    backgroundColor: '#f5f5f5',
   },
   header: {
     flexDirection: 'row',
@@ -163,27 +266,38 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#eee',
-    elevation: 2,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
   },
   userHeaderLeft: {
     flexDirection: 'row',
     alignItems: 'center',
   },
   userHeaderAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    marginRight: 10,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    marginRight: 12,
     backgroundColor: '#ddd',
+    borderWidth: 2,
+    borderColor: '#0066cc',
   },
   userHeaderName: {
     fontSize: 18,
     fontWeight: 'bold',
     color: '#333',
   },
+  userHeaderSubtext: {
+    fontSize: 13,
+    color: '#666',
+    marginTop: 2,
+  },
   logoutButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
     backgroundColor: '#f2f2f2',
     borderRadius: 8,
   },
@@ -200,68 +314,86 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#fff',
     padding: 16,
-    marginHorizontal: 10,
-    marginVertical: 5,
-    borderRadius: 12,
+    marginHorizontal: 12,
+    marginVertical: 6,
+    borderRadius: 14,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
     elevation: 2,
   },
   avatarContainer: {
     position: 'relative',
   },
   avatar: {
-    width: 55,
-    height: 55,
-    borderRadius: 27,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: '#ddd',
   },
   onlineBadge: {
     position: 'absolute',
-    bottom: 3,
-    right: 3,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
+    bottom: 2,
+    right: 2,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
     backgroundColor: '#4CAF50',
-    borderWidth: 2,
+    borderWidth: 3,
     borderColor: '#fff',
   },
   userInfo: {
     flex: 1,
-    marginLeft: 12,
+    marginLeft: 14,
+  },
+  userHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
   },
   userName: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '600',
     color: '#333',
-  },
-  lastMessage: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 2,
-  },
-  timeContainer: {
-    marginLeft: 8,
   },
   timeText: {
     fontSize: 12,
     color: '#999',
   },
+  lastMessage: {
+    fontSize: 14,
+    color: '#666',
+  },
+  arrow: {
+    marginLeft: 8,
+  },
+  arrowText: {
+    fontSize: 28,
+    color: '#ccc',
+    fontWeight: '300',
+  },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#f5f5f5',
   },
   emptyContainer: {
     alignItems: 'center',
-    marginTop: 50,
+    marginTop: 80,
+    paddingHorizontal: 40,
   },
   emptyText: {
-    fontSize: 16,
+    fontSize: 18,
+    fontWeight: '600',
     color: '#999',
+    marginBottom: 8,
+  },
+  emptySubtext: {
+    fontSize: 14,
+    color: '#bbb',
   },
 });
 

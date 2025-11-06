@@ -1,60 +1,59 @@
-# Backend Project
 
-This project combines the features of YouTube and Twitter, providing a platform where users can share videos and post tweets.
 
-## Features
+# 🗨️ Real-Time Chat App Backend
 
-- **Video Sharing**: Users can upload, view, and share videos.
-- **Tweet Posting**: Users can post tweets, like, and retweet.
-- **User Authentication**: Secure user authentication and authorization.
-- **User Profiles**: Users can create and manage their profiles.
-- **Search Functionality**: Search for videos and tweets.
-- **Notifications**: Real-time notifications for user interactions.
+A Node.js + Express + Socket.IO backend for a 1:1 real-time chat app with JWT authentication and MongoDB.
 
-## Technologies Used
+## 🚀 Features
 
-- **Backend**: Node.js, Express.js
-- **Database**: MongoDB
-- **Authentication**: JWT (JSON Web Tokens)
-- **Storage**: AWS S3 for video storage
-- **Real-time**: Socket.io for real-time notifications
+* JWT-based Register/Login
+* Real-time 1:1 chat via Socket.IO
+* Online/Offline status
+* Message persistence in MongoDB
+* Typing indicator & read receipts
 
-## Installation
+## 🛠️ Tech Stack
 
-1. Clone the repository:
-    ```bash
-    git clone https://github.com/yourusername/backend_project.git
-    ```
-2. Navigate to the project directory:
-    ```bash
-    cd backend_project
-    ```
-3. Install dependencies:
-    ```bash
-    npm install
-    ```
-4. Set up environment variables:
-    - Create a `.env` file in the root directory.
-    - Add the following variables:
-        ```
-        MONGODB_URI=your_mongodb_uri
-        JWT_SECRET=your_jwt_secret
-        AWS_ACCESS_KEY_ID=your_aws_access_key_id
-        AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
-        ```
+* **Node.js** + **Express.js**
+* **MongoDB** + **Mongoose**
+* **Socket.IO**
+* **JWT Authentication**
 
-## Usage
+## 📦 Setup
 
-1. Start the server:
-    ```bash
-    npm start
-    ```
-2. Access the API at `http://localhost:3000`.
+```bash
+git clone <repo-url>
+cd server
+npm install
+```
 
-## Contributing
+Create a `.env` file:
 
-Contributions are welcome! Please open an issue or submit a pull request.
+```
+PORT=5000
+MONGO_URI=<your_mongodb_uri>
+JWT_SECRET=<your_secret>
+```
 
-## License
+Run the server:
 
-This project is licensed under the MIT License.
+```bash
+npm start
+```
+
+## 📡 API Endpoints
+
+
+POST /api/auth/register
+POST /api/auth/login
+GET  /api/users
+GET  /api/conversations/:id/messages
+
+
+## ⚡ Socket Events
+
+
+message:send     → Send message
+message:new      → Receive message
+typing:start|stop → Typing indicator
+message:read     → Mark message as read
